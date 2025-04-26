@@ -4,149 +4,134 @@ import com.baomidou.mybatisplus.extension.service.impl.ServiceImpl;
 import com.doureview.auth.util.JwtUtils;
 import com.doureview.auth.util.UserHolder;
 import com.doureview.common.Result;
+import com.doureview.user.dto.UserLoginDTO;
+import com.doureview.user.dto.UserRegisterDTO;
+import com.doureview.user.dto.UserResponseDTO;
 import com.doureview.user.entity.User;
 import com.doureview.user.mapper.UserMapper;
 import com.doureview.user.service.UserService;
-import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.redisson.api.RLock;
 import org.redisson.api.RedissonClient;
+import org.springframework.beans.BeanUtils;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.stereotype.Service;
 
-import java.util.HashMap;
+import java.util.List;
 import java.util.Map;
+import java.util.HashMap;
 import java.util.concurrent.TimeUnit;
+import java.util.stream.Collectors;
 
-/**
- * 用户模块业务实现类
- */
 @Service
 public class UserServiceImpl extends ServiceImpl<UserMapper, User> implements UserService {
 
     @Autowired
-    private StringRedisTemplate stringRedisTemplate;
+    private StringRedisTemplate redisTemplate;
 
     @Autowired
     private RedissonClient redissonClient;
 
-    /**
-     * 用户注册功能，使用 Redisson 分布式锁防止重复提交
-     */
+    private static final ObjectMapper objectMapper = new ObjectMapper();
+
     @Override
-    public Result<String> register(User user) {
-        String username = user.getUsername();
-        // 分布式锁 key
+    public Result<String> register(UserRegisterDTO dto) {
+        String username = dto.getUsername();
         String lockKey = "LOCK:REGISTER:" + username;
         RLock lock = redissonClient.getLock(lockKey);
-
         try {
-            // 尝试获取锁，最多等待3秒，锁定10秒
             if (!lock.tryLock(3, 10, TimeUnit.SECONDS)) {
                 return Result.fail("注册请求频繁，请稍后再试");
             }
-
-            // 查询用户名是否已存在
-            boolean exists = lambdaQuery()
-                    .eq(User::getUsername, user.getUsername())
-                    .exists();
+            boolean exists = lambdaQuery().eq(User::getUsername, username).exists();
             if (exists) {
                 return Result.fail("用户名已存在");
             }
-
-            // 保存用户
+            User user = new User();
+            BeanUtils.copyProperties(dto, user);
             save(user);
-            return Result.ok("注册成功");
-
+            return Result.success("注册成功");
         } catch (InterruptedException e) {
-            return Result.fail("系统异常，请稍后重试");
+            return Result.fail("系统异常");
         } finally {
-            // 释放锁
-            if (lock.isHeldByCurrentThread()) {
-                lock.unlock();
-            }
+            if (lock.isHeldByCurrentThread()) lock.unlock();
         }
     }
 
-    /**
-     * 用户登录功能：验证用户名密码，生成 token 并保存至 Redis
-     */
     @Override
-    public Result<Map<String, Object>> login(User user) {
-        // 根据用户名和密码查询数据库
+    public Result<Map<String, Object>> login(UserLoginDTO dto) {
         User dbUser = lambdaQuery()
-                .eq(User::getUsername, user.getUsername())
-                .eq(User::getPassword, user.getPassword())
+                .eq(User::getUsername, dto.getUsername())
+                .eq(User::getPassword, dto.getPassword())
                 .one();
         if (dbUser == null) {
             return Result.fail("用户名或密码错误");
         }
-
-        // 生成 JWT token
         String token = JwtUtils.createToken(dbUser.getId());
-
-        // 保存用户信息到 Redis
-        String key = "LOGIN:TOKEN:" + token;
         try {
-            stringRedisTemplate.opsForValue().set(key, new ObjectMapper().writeValueAsString(dbUser));
-        } catch (JsonProcessingException e) {
-            throw new RuntimeException("登录失败");
+            redisTemplate.opsForValue().set("LOGIN:TOKEN:" + token,
+                    objectMapper.writeValueAsString(dbUser));
+        } catch (Exception e) {
+            return Result.fail("登录失败");
         }
-
-        // 返回 token 和用户信息
-        Map<String, Object> result = new HashMap<>();
-        result.put("token", token);
-        result.put("user", dbUser);
-        return Result.ok(result);
+        Map<String, Object> map = new HashMap<>();
+        map.put("token", token);
+        map.put("user", dbUser);
+        return Result.success(map);
     }
 
-    /**
-     * 退出登录：删除 Redis 中的 token
-     */
     @Override
     public Result<String> logout(String token) {
-        stringRedisTemplate.delete("LOGIN:TOKEN:" + token);
-        return Result.ok("退出登录成功");
+        redisTemplate.delete("LOGIN:TOKEN:" + token);
+        return Result.success("退出成功");
     }
 
-    /**
-     * 获取当前登录用户信息
-     */
     @Override
-    public Result<User> getCurrentUser() {
-        User loginUser = UserHolder.get();
-        if (loginUser == null) {
+    public Result<UserResponseDTO> getCurrentUser() {
+        User user = UserHolder.get();
+        if (user == null) {
             return Result.fail("未登录");
         }
-        return Result.ok(loginUser);
+        UserResponseDTO dto = new UserResponseDTO();
+        BeanUtils.copyProperties(user, dto);
+        return Result.success(dto);
     }
 
-    /**
-     * 更新用户信息
-     */
     @Override
-    public Result<String> updateUser(Long id, User user) {
+    public Result<String> updateUser(Long id, UserRegisterDTO dto) {
+        User user = new User();
+        BeanUtils.copyProperties(dto, user);
         user.setId(id);
         updateById(user);
-        return Result.ok("更新成功");
+        return Result.success("更新成功");
     }
 
-    /**
-     * 删除用户
-     */
     @Override
     public Result<String> deleteUser(Long id) {
         removeById(id);
-        return Result.ok("删除成功");
+        return Result.success("删除成功");
     }
 
-    /**
-     * 根据 ID 查询用户信息
-     */
     @Override
-    public Result<User> getUser(Long id) {
+    public Result<UserResponseDTO> getUser(Long id) {
         User user = getById(id);
-        return Result.ok(user);
+        if (user == null) {
+            return Result.fail("用户不存在");
+        }
+        UserResponseDTO dto = new UserResponseDTO();
+        BeanUtils.copyProperties(user, dto);
+        return Result.success(dto);
+    }
+
+    @Override
+    public Result<List<UserResponseDTO>> listAllUsers() {
+        List<User> users = list();
+        List<UserResponseDTO> dtos = users.stream().map(user -> {
+            UserResponseDTO dto = new UserResponseDTO();
+            BeanUtils.copyProperties(user, dto);
+            return dto;
+        }).collect(Collectors.toList());
+        return Result.success(dtos);
     }
 }
