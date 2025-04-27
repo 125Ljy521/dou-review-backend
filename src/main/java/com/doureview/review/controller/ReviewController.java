@@ -11,6 +11,10 @@ import org.springframework.web.bind.annotation.*;
 
 import java.util.List;
 
+/**
+ * 影评模块接口层
+ * 只负责接收请求与返回结果，业务逻辑由 ReviewService 实现
+ */
 @RestController
 @RequestMapping("/review")
 @Api(tags = "影评模块")
@@ -37,7 +41,7 @@ public class ReviewController {
         return reviewService.likeReview(id);
     }
 
-    @ApiOperation("取消点赞")
+    @ApiOperation("取消点赞影评")
     @PostMapping("/{id}/unlike")
     public Result<String> unlikeReview(@PathVariable Long id) {
         return reviewService.unlikeReview(id);
